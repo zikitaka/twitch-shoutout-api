@@ -1,9 +1,9 @@
-// Simple Twitch Shoutout API - Single File Version
+// Enhanced Twitch Shoutout API with better game detection and messages
 const express = require('express');
 const https = require('https');
 const app = express();
 
-// Twitch API credentials (set these in your hosting environment)
+// Twitch API credentials
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID || '';
 const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET || '';
 
@@ -128,6 +128,74 @@ async function getCurrentStream(userId) {
   }
 }
 
+// Get user's recent videos to find last game played
+async function getRecentVideos(userId) {
+  try {
+    const token = await getTwitchToken();
+    
+    return new Promise((resolve, reject) => {
+      const options = {
+        hostname: 'api.twitch.tv',
+        path: `/helix/videos?user_id=${userId}&first=5&type=archive`,
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Client-Id': TWITCH_CLIENT_ID
+        }
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const response = JSON.parse(data);
+            resolve(response.data || []);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      });
+
+      req.on('error', reject);
+      req.end();
+    });
+  } catch (error) {
+    return [];
+  }
+}
+
+// Enhanced message variations
+function getRandomMessage(username, game, isLive, followerCount) {
+  const baseMessages = [
+    `Go check out ${username}`,
+    `Show some love to ${username}`,
+    `Give ${username} a follow`,
+    `Check out the amazing ${username}`,
+    `Support ${username}`
+  ];
+  
+  const baseMessage = baseMessages[Math.floor(Math.random() * baseMessages.length)];
+  
+  if (isLive && game) {
+    const liveMessages = [
+      `${baseMessage}, they're currently live playing ${game}!`,
+      `${baseMessage} - they're streaming ${game} right now!`,
+      `${baseMessage}, live now with ${game}!`
+    ];
+    return liveMessages[Math.floor(Math.random() * liveMessages.length)];
+  } else if (game) {
+    const recentMessages = [
+      `${baseMessage}, they recently played ${game}!`,
+      `${baseMessage}, check out their ${game} content!`,
+      `${baseMessage} - great ${game} streamer!`
+    ];
+    return recentMessages[Math.floor(Math.random() * recentMessages.length)];
+  } else {
+    return `${baseMessage}, great content creator!`;
+  }
+}
+
 // Main shoutout endpoint
 app.get('/', async (req, res) => {
   let username = req.query.user || '';
@@ -156,27 +224,88 @@ app.get('/', async (req, res) => {
     
     // Get current stream
     const stream = await getCurrentStream(user.id);
-    const game = stream?.game_name;
+    let game = null;
+    let isLive = false;
     
-    // Generate message
-    if (game) {
-      res.send(`Check out ${username}, they are playing ${game} at https://twitch.tv/${username}!`);
+    if (stream) {
+      game = stream.game_name;
+      isLive = true;
     } else {
-      res.send(`Check out ${username} at https://twitch.tv/${username}!`);
+      // If not live, try to get recent game from videos
+      const videos = await getRecentVideos(user.id);
+      if (videos.length > 0) {
+        // Try to extract game from recent video titles
+        const recentVideo = videos[0];
+        if (recentVideo.title) {
+          // Look for common game indicators in titles
+          const commonGames = ['Valorant', 'League of Legends', 'Fortnite', 'Minecraft', 'Among Us', 'Call of Duty', 'Apex Legends', 'Counter-Strike', 'Overwatch', 'World of Warcraft', 'Rocket League', 'Fall Guys', 'GTA', 'Dead by Daylight', 'Escape from Tarkov'];
+          for (const gameCheck of commonGames) {
+            if (recentVideo.title.toLowerCase().includes(gameCheck.toLowerCase())) {
+              game = gameCheck;
+              break;
+            }
+          }
+        }
+      }
     }
+    
+    // Generate enhanced message
+    const message = getRandomMessage(username, game, isLive, user.view_count);
+    const url = ` at https://twitch.tv/${username}`;
+    
+    res.send(message + url);
     
   } catch (error) {
     console.error('Error:', error);
-    res.send(`Check out ${username} at https://twitch.tv/${username}!`);
+    // Fallback with variety
+    const fallbacks = [
+      `Check out ${username} at https://twitch.tv/${username}!`,
+      `Show some love to ${username} at https://twitch.tv/${username}!`,
+      `Give ${username} a follow at https://twitch.tv/${username}!`
+    ];
+    res.send(fallbacks[Math.floor(Math.random() * fallbacks.length)]);
+  }
+});
+
+// Debug endpoint to see what's happening
+app.get('/debug', async (req, res) => {
+  const username = req.query.user || '';
+  if (!username) {
+    return res.json({ error: 'No username provided' });
+  }
+  
+  try {
+    const user = await getTwitchUser(username.replace('@', ''));
+    const stream = await getCurrentStream(user?.id);
+    const videos = await getRecentVideos(user?.id);
+    
+    res.json({
+      user: user ? {
+        login: user.login,
+        display_name: user.display_name,
+        view_count: user.view_count
+      } : null,
+      stream: stream ? {
+        game_name: stream.game_name,
+        title: stream.title,
+        viewer_count: stream.viewer_count
+      } : null,
+      recent_videos: videos.slice(0, 2).map(v => ({
+        title: v.title,
+        created_at: v.created_at
+      }))
+    });
+  } catch (error) {
+    res.json({ error: error.message });
   }
 });
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 const port = process.env.PORT || 3000;
 app.listen(port, '0.0.0.0', () => {
-  console.log(`Shoutout API running on port ${port}`);
+  console.log(`Enhanced Shoutout API running on port ${port}`);
 });
